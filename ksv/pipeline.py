@@ -114,6 +114,60 @@ def run_ksv(
         kernel_ast=kernel_ast,
     )
 
+    # Also generate a Python ctypes runner that will load the compiled library
+    # (expected to be produced by building `host.cu` into a shared library).
+    try:
+        from ksv.execution.python_runner_codegen import generate_python_runner
+
+        # infer element counts and param types
+        # buffer_roles is dict name->role
+        buffers = buffer_roles
+        elem_counts = {}
+        for name in buffers:
+            shape = tensor_shapes.get(name, (1024,))
+            # flatten shape to element count
+            if isinstance(shape, int):
+                cnt = shape
+            else:
+                cnt = 1
+                for s in shape:
+                    cnt *= s
+            elem_counts[name] = cnt
+
+        # extract param_types from kernel_ast if available
+        param_types = {}
+        if kernel_ast is not None:
+            try:
+                func_decl = kernel_ast.decl.type
+                if getattr(func_decl, "args", None) is not None:
+                    for param in func_decl.args.params:
+                        name = getattr(param, "name", None)
+                        ty = getattr(param, "type", None)
+                        if (
+                            ty is not None
+                            and ty.__class__.__name__ == "PtrDecl"
+                        ):
+                            inner = ty.type
+                            if inner.__class__.__name__ == "TypeDecl":
+                                it = inner.type
+                                if it.__class__.__name__ == "IdentifierType":
+                                    param_types[name] = " ".join(it.names)
+            except Exception:
+                param_types = {}
+
+        # pick library name (assume host.cu compiled as libhost.so or
+        # libhost.dylib)
+        lib_name = "./libhost.so"
+        py_runner = generate_python_runner(
+            out_dir=".",
+            lib_name=lib_name,
+            buffers=buffers,
+            elem_counts=elem_counts,
+            param_types=param_types,
+        )
+    except Exception:
+        pass
+
     outputs = run_kernel(host_path)
 
     # --------------------------------------------------

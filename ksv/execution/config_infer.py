@@ -13,7 +13,9 @@ class ThreadUsageVisitor(c_ast.NodeVisitor):
         self.uses_block_z = False
 
     def visit_StructRef(self, node):
-        if isinstance(node.name, c_ast.ID) and isinstance(node.field, c_ast.ID):
+        if isinstance(node.name, c_ast.ID) and isinstance(
+            node.field, c_ast.ID
+        ):
             if node.name.name == "threadIdx":
                 if node.field.name == "x":
                     self.uses_thread_x = True
@@ -56,9 +58,14 @@ def infer_execution_config(kernel_ast, thread_bounds):
     block_x = block_y = block_z = 1
     grid_x = grid_y = grid_z = 1
 
-    if (visitor.uses_thread_x or visitor.uses_block_x or
-        visitor.uses_thread_y or visitor.uses_block_y or
-        visitor.uses_thread_z or visitor.uses_block_z):
+    if (
+        visitor.uses_thread_x
+        or visitor.uses_block_x
+        or visitor.uses_thread_y
+        or visitor.uses_block_y
+        or visitor.uses_thread_z
+        or visitor.uses_block_z
+    ):
         # total logical threads needed
         total_threads = 1
 
@@ -68,27 +75,28 @@ def infer_execution_config(kernel_ast, thread_bounds):
             if isinstance(node, c_ast.BinaryOp):
                 lhs = eval_node_to_int(node.left, var_bounds)
                 rhs = eval_node_to_int(node.right, var_bounds)
-                if node.op == '+':
+                if node.op == "+":
                     return lhs + rhs
-                if node.op == '-':
+                if node.op == "-":
                     return lhs - rhs
-                if node.op == '*':
+                if node.op == "*":
                     return lhs * rhs
             if isinstance(node, c_ast.ID):
                 name = node.name
                 if name in var_bounds:
                     vb = var_bounds[name]
-                    if hasattr(vb, 'upper'):
+                    if hasattr(vb, "upper"):
                         return eval_node_to_int(vb.upper, var_bounds)
                     else:
                         # assume tuple (low, up)
                         return int(vb[1])
-            # unknown structure (e.g., gridDim.x * blockDim.x), return conservative default
+            # unknown structure (e.g., gridDim.x * blockDim.x), return
+            # conservative default
             return 1024
 
         for _, vb in thread_bounds.items():
             # vb may be LoopBound or tuple (low, up)
-            if hasattr(vb, 'upper'):
+            if hasattr(vb, "upper"):
                 ub_node = vb.upper
                 try:
                     ub_val = eval_node_to_int(ub_node, thread_bounds)
@@ -117,7 +125,9 @@ def infer_execution_config(kernel_ast, thread_bounds):
             # use x,y,z (or x+z) heuristics
             block_x = min(32, total_threads)
             block_y = min(8, max(1, math.ceil(total_threads / block_x)))
-            block_z = min(4, max(1, math.ceil(total_threads / (block_x * block_y))))
+            block_z = min(
+                4, max(1, math.ceil(total_threads / (block_x * block_y)))
+            )
             grid_x = math.ceil(total_threads / (block_x * block_y * block_z))
 
         # (no additional override; keep block_x/block_y/block_z as computed)
