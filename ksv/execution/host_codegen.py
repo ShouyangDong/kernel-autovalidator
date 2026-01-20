@@ -1,15 +1,11 @@
+import math
 import os
 import textwrap
 
 
 def num_elements(shape):
     # Accept either an int (total elements) or an iterable shape tuple
-    if isinstance(shape, int):
-        return shape
-    n = 1
-    for s in shape:
-        n *= s
-    return n
+    return shape if isinstance(shape, int) else math.prod(shape)
 
 
 headers = {
@@ -17,6 +13,12 @@ headers = {
     "mlu": "#include <bang.h>\n",
     "hip": "#include <hip/hip_runtime.h>",
     "cpu": "#include <stdio.h>",
+}
+
+prefixes = {
+    "cuda": "__global__",
+    "mlu": "__mlu_global__",
+    "hip": "__global__",
 }
 
 
@@ -94,20 +96,20 @@ def generate_host_code(
 
         decls.append(f"float *d_{buf}; float *h_{buf};")
 
-        mallocs.append(f"cudaMalloc(&d_{buf}, {size});")
+        mallocs.append(f"{target}Malloc(&d_{buf}, {size});")
         h_mallocs.append(f"h_{buf} = (float*)malloc({size});")
 
         if buf in input_bufs or buf in inout_bufs:
             h2d.append(
-                f"cudaMemcpy(d_{buf}, h_{buf}, {size}, cudaMemcpyHostToDevice);"
+                f"{target}Memcpy(d_{buf}, h_{buf}, {size}, {target}MemcpyHostToDevice);"
             )
 
         if buf in output_bufs or buf in inout_bufs:
             d2h.append(
-                f"cudaMemcpy(h_{buf}, d_{buf}, {size}, cudaMemcpyDeviceToHost);"
+                f"{target}Memcpy(h_{buf}, d_{buf}, {size}, {target}MemcpyDeviceToHost);"
             )
 
-        frees.append(f"cudaFree(d_{buf}); free(h_{buf});")
+        frees.append(f"{target}Free(d_{buf}); free(h_{buf});")
 
     # === Kernel argument list ===
     kernel_args = []
@@ -156,21 +158,17 @@ def generate_host_code(
         byte_size_map[buf] = count * elem_size_map.get(buf, 4)
 
     host_code = f"""
-#include <cuda.h>
-#include <cuda_runtime.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <math.h>
+{headers[target]}
 
-__global__ {kernel_code}
+{prefixes[target]} {kernel_code}
 
 extern "C" void run_kernel({run_args_str}) {{
     // Device pointers (use per-buffer types)
 {textwrap.indent('\n'.join([f"{param_types.get(b, 'float')} *d_{b};" for b in input_bufs + output_bufs + inout_bufs]), '    ')}
 
     // Device malloc and host->device copies using statically-derived sizes
-{textwrap.indent('\n'.join([f'cudaMalloc(&d_{b}, (size_t){byte_size_map.get(b, 4)});' for b in input_bufs + output_bufs + inout_bufs]), '    ')}
-{textwrap.indent('\n'.join([f'if (h_{b}) cudaMemcpy(d_{b}, h_{b}, (size_t){byte_size_map.get(b, 4)}, cudaMemcpyHostToDevice);' for b in input_bufs + inout_bufs]), '    ')}
+{textwrap.indent('\n'.join([f'{target}Malloc(&d_{b}, (size_t){byte_size_map.get(b, 4)});' for b in input_bufs + output_bufs + inout_bufs]), '    ')}
+{textwrap.indent('\n'.join([f'if (h_{b}) {target}Memcpy(d_{b}, h_{b}, (size_t){byte_size_map.get(b, 4)}, {target}MemcpyHostToDevice);' for b in input_bufs + inout_bufs]), '    ')}
 
     // Launch kernel
     dim3 block({bx}, {by}, {bz});
@@ -178,10 +176,10 @@ extern "C" void run_kernel({run_args_str}) {{
     {kernel_name}<<<grid, block>>>({kernel_args_str});
 
     // Device -> host copies for outputs
-{textwrap.indent('\n'.join([f'if (h_{b}) cudaMemcpy(h_{b}, d_{b}, (size_t){byte_size_map.get(b, 4)}, cudaMemcpyDeviceToHost);' for b in output_bufs + inout_bufs]), '    ')}
+{textwrap.indent('\n'.join([f'if (h_{b}) {target}Memcpy(h_{b}, d_{b}, (size_t){byte_size_map.get(b, 4)}, {target}MemcpyDeviceToHost);' for b in output_bufs + inout_bufs]), '    ')}
 
     // Free device memory
-{textwrap.indent('\n'.join([f'cudaFree(d_{b});' for b in input_bufs + output_bufs + inout_bufs]), '    ')}
+{textwrap.indent('\n'.join([f'{target}Free(d_{b});' for b in input_bufs + output_bufs + inout_bufs]), '    ')}
 }}
 """
 
