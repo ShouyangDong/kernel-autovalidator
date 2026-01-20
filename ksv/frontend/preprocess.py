@@ -1,6 +1,3 @@
-# ksv/frontend/preprocess.py
-
-
 CUDA_KEYWORDS = [
     "__global__",
     "__device__",
@@ -10,6 +7,12 @@ CUDA_KEYWORDS = [
     "__launch_bounds__",
     "__restrict__",
 ]
+
+MLU_KEYWORDS = [
+    "__mlu_global__",
+    "__mlu_device__",
+]
+
 
 CUDA_BUILTINS = {
     "threadIdx.x": "threadIdx_x",
@@ -36,21 +39,29 @@ dim3 gridDim;
 """
 
 
-def preprocess_cuda(code: str) -> str:
+def preprocess_code(code: str, target: str) -> str:
     """
-    Preprocess CUDA kernel code into C-like code suitable for AST analysis.
+    Preprocess kernel code into C-like code suitable for AST analysis.
 
     Steps:
-      1. Remove CUDA-specific qualifiers
-      2. Rewrite CUDA builtins to plain identifiers
-      3. Inject fake declarations for CUDA builtins
+      1. Remove target-specific qualifiers
+      2. Rewrite target builtins to plain identifiers
+      3. Inject fake declarations for target builtins
+
+    Args:
+        code: Original kernel code
+        target: Target backend ("cuda", "mlu", "cpu" or "hip")
     """
 
     # --------------------------------------------------
-    # Step 1: Strip CUDA keywords
+    # Step 1: Strip target keywords
     # --------------------------------------------------
-    for kw in CUDA_KEYWORDS:
-        code = code.replace(kw, "")
+    if target in ["cuda", "hip"]:
+        for kw in CUDA_KEYWORDS:
+            code = code.replace(kw, "")
+    elif target == "mlu":
+        for kw in MLU_KEYWORDS:
+            code = code.replace(kw, "")
 
     # --------------------------------------------------
     # Step 2: Rewrite CUDA builtins
