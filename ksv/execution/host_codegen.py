@@ -12,6 +12,14 @@ def num_elements(shape):
     return n
 
 
+headers = {
+    "cuda": "#include <cuda.h>\n#include <cuda_runtime.h>",
+    "mlu": "#include <bang.h>\n",
+    "hip": "#include <hip/hip_runtime.h>",
+    "cpu": "#include <stdio.h>",
+}
+
+
 def generate_host_code(
     kernel_code,
     kernel_name,
@@ -20,9 +28,17 @@ def generate_host_code(
     exec_config,
     out_dir,
     kernel_ast=None,
+    target="cuda",
 ):
     os.makedirs(out_dir, exist_ok=True)
-    host_path = os.path.join(out_dir, "host.cu")
+    if target == "cuda":
+        host_path = os.path.join(out_dir, "host.cu")
+    elif target == "mlu":
+        host_path = os.path.join(out_dir, "host.mlu")
+    elif target == "hip":
+        host_path = os.path.join(out_dir, "host.hip")
+    else:
+        raise NotImplementedError(f"Unsupported target: {target}")
 
     block_x, block_y, block_z = exec_config["block"]
     grid_x, grid_y, grid_z = exec_config["grid"]

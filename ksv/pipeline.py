@@ -10,7 +10,7 @@ from ksv.analysis.memory_access import extract_memory_accesses
 from ksv.execution.config_infer import infer_execution_config
 from ksv.execution.host_codegen import generate_host_code
 from ksv.frontend.ast_builder import build_ast
-from ksv.frontend.preprocess import preprocess_cuda
+from ksv.frontend.preprocess import preprocess_code
 from ksv.validation.runner import run_kernel
 
 
@@ -36,6 +36,7 @@ class KSVExecutionResult:
 
 def run_ksv(
     kernel_path: str,
+    target: str = "cuda",
     verbose: bool = False,
 ) -> KSVExecutionResult:
     """
@@ -50,6 +51,7 @@ def run_ksv(
 
     Args:
         kernel_path: CUDA / HIP kernel source
+        target: Target backend ("cuda", "mlu", "cpu" or "hip")
 
     Returns:
         KSVExecutionResult
@@ -60,7 +62,7 @@ def run_ksv(
     # Step 0: Load & preprocess kernel
     # --------------------------------------------------
     with open(kernel_path, "r") as f:
-        kernel_code = preprocess_cuda(f.read())
+        kernel_code = preprocess_code(f.read(), target=target)
 
     # --------------------------------------------------
     # Step 1: AST construction
@@ -112,6 +114,7 @@ def run_ksv(
         exec_config=exec_config,
         out_dir="./",
         kernel_ast=kernel_ast,
+        target=target,
     )
 
     # Also generate a Python ctypes runner that will load the compiled library
