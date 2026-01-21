@@ -81,35 +81,8 @@ def generate_host_code(
         except Exception:
             param_types = {}
 
-    # === Declare buffers ===
-    decls = []
-    mallocs = []
-    h_mallocs = []
-    h2d = []
-    d2h = []
-    frees = []
-
-    for buf in input_bufs + output_bufs + inout_bufs:
-        shape = tensor_shapes.get(buf, (1024,))
-        n_elem = num_elements(shape)
-        size = n_elem * 4  # float
-
-        decls.append(f"float *d_{buf}; float *h_{buf};")
-
-        mallocs.append(f"{target}Malloc(&d_{buf}, {size});")
-        h_mallocs.append(f"h_{buf} = (float*)malloc({size});")
-
-        if buf in input_bufs or buf in inout_bufs:
-            h2d.append(
-                f"{target}Memcpy(d_{buf}, h_{buf}, {size}, {target}MemcpyHostToDevice);"
-            )
-
-        if buf in output_bufs or buf in inout_bufs:
-            d2h.append(
-                f"{target}Memcpy(h_{buf}, d_{buf}, {size}, {target}MemcpyDeviceToHost);"
-            )
-
-        frees.append(f"{target}Free(d_{buf}); free(h_{buf});")
+    # Note: buffer declarations, mallocs and copies are emitted later using
+    # statically-derived byte sizes (`byte_size_map`).
 
     # === Kernel argument list ===
     kernel_args = []
@@ -123,22 +96,16 @@ def generate_host_code(
     # each buffer and perform H2D -> kernel launch -> D2H. No stdout printing.
 
     # Build C signature for run_kernel using host buffer names and parameter
-    # types
+    # types. Raise error if param type is unknown (strict mode).
     run_args = []
-    # mapping base type -> byte size
-    type_size = {
-        "float": 4,
-        "double": 8,
-        "int": 4,
-        "unsigned int": 4,
-        "half": 2,
-    }
-    elem_size_map = {}
     for buf in input_bufs + output_bufs + inout_bufs:
-        base = param_types.get(buf, "float")
+        if buf not in param_types:
+            raise ValueError(
+                f"Parameter type for buffer '{buf}' not found in kernel AST"
+            )
+        base = param_types[buf]
         ctype = base
         run_args.append(f"{ctype}* h_{buf}")
-        elem_size_map[buf] = type_size.get(base, 4)
 
     # No runtime `n` parameter: sizes are derived from `tensor_shapes`
     # statically.
@@ -150,12 +117,18 @@ def generate_host_code(
 
     # Precompute per-buffer element counts and byte sizes using tensor_shapes
     elem_count_map = {}
-    byte_size_map = {}
+    # compute fallback element count from execution config (threads launched)
+    threads_per_grid = (gx * gy * gz) * (bx * by * bz)
+
     for buf in input_bufs + output_bufs + inout_bufs:
-        shape = tensor_shapes.get(buf, (1024,))
-        count = num_elements(shape)
+        shape = tensor_shapes.get(buf, None)
+        if shape is None:
+            # fallback to number of launched threads if shape unknown
+            count = threads_per_grid
+        else:
+            count = num_elements(shape)
+
         elem_count_map[buf] = count
-        byte_size_map[buf] = count * elem_size_map.get(buf, 4)
 
     host_code = f"""
 {headers[target]}
@@ -164,11 +137,11 @@ def generate_host_code(
 
 extern "C" void run_kernel({run_args_str}) {{
     // Device pointers (use per-buffer types)
-{textwrap.indent('\n'.join([f"{param_types.get(b, 'float')} *d_{b};" for b in input_bufs + output_bufs + inout_bufs]), '    ')}
+{textwrap.indent('\n'.join([f"{param_types[b]} *d_{b};" for b in input_bufs + output_bufs + inout_bufs]), '    ')}
 
     // Device malloc and host->device copies using statically-derived sizes
-{textwrap.indent('\n'.join([f'{target}Malloc(&d_{b}, (size_t){byte_size_map.get(b, 4)});' for b in input_bufs + output_bufs + inout_bufs]), '    ')}
-{textwrap.indent('\n'.join([f'if (h_{b}) {target}Memcpy(d_{b}, h_{b}, (size_t){byte_size_map.get(b, 4)}, {target}MemcpyHostToDevice);' for b in input_bufs + inout_bufs]), '    ')}
+{textwrap.indent('\n'.join([f"{target}Malloc(&d_{b}, (size_t){elem_count_map.get(b, 1)} * sizeof({param_types[b]}));" for b in input_bufs + output_bufs + inout_bufs]), '    ')}
+{textwrap.indent('\n'.join([f"if (h_{b}) {target}Memcpy(d_{b}, h_{b}, (size_t){elem_count_map.get(b, 1)} * sizeof({param_types[b]}), {target}MemcpyHostToDevice);" for b in input_bufs + inout_bufs]), '    ')}
 
     // Launch kernel
     dim3 block({bx}, {by}, {bz});
@@ -176,7 +149,7 @@ extern "C" void run_kernel({run_args_str}) {{
     {kernel_name}<<<grid, block>>>({kernel_args_str});
 
     // Device -> host copies for outputs
-{textwrap.indent('\n'.join([f'if (h_{b}) {target}Memcpy(h_{b}, d_{b}, (size_t){byte_size_map.get(b, 4)}, {target}MemcpyDeviceToHost);' for b in output_bufs + inout_bufs]), '    ')}
+{textwrap.indent('\n'.join([f"if (h_{b}) {target}Memcpy(h_{b}, d_{b}, (size_t){elem_count_map.get(b, 1)} * sizeof({param_types[b]}), {target}MemcpyDeviceToHost);" for b in output_bufs + inout_bufs]), '    ')}
 
     // Free device memory
 {textwrap.indent('\n'.join([f'{target}Free(d_{b});' for b in input_bufs + output_bufs + inout_bufs]), '    ')}
